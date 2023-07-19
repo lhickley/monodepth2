@@ -37,7 +37,14 @@ def export_gt_depths_kitti():
     print("Exporting ground truth depths for {}".format(opt.split))
 
     gt_depths = []
-    for line in lines:
+
+    count=0
+
+    print(len(lines))
+
+    for idx, line in enumerate(lines):
+
+        #print(line)
 
         folder, frame_id, _ = line.split()
         frame_id = int(frame_id)
@@ -52,11 +59,23 @@ def export_gt_depths_kitti():
                                          "groundtruth", "image_02", "{:010d}.png".format(frame_id))
             gt_depth = np.array(pil.open(gt_depth_path)).astype(np.float32) / 256
 
-        gt_depths.append(gt_depth.astype(np.float32))
+        if idx == 0:
+            gt_depths.append(gt_depth.astype(np.float32))
+            print(line)
+        elif gt_depth.shape == gt_depths[0].shape:
+            gt_depths.append(gt_depth.astype(np.float32))
+            print(line)
+        else:
+            print("Skipping frame with inhomogeneous shape: {}".format(line))
+            count+=1
 
     output_path = os.path.join(split_folder, "gt_depths.npz")
 
+    print(count)
+
     print("Saving to {}".format(opt.split))
+
+    #print(gt_depths)
 
     np.savez_compressed(output_path, data=np.array(gt_depths))
 
