@@ -12,6 +12,7 @@ from utils import readlines
 from options import MonodepthOptions
 import datasets
 import networks
+from scipy import stats as scpystats
 
 cv2.setNumThreads(0)  # This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1)
 
@@ -23,6 +24,8 @@ splits_dir = os.path.join(os.path.dirname(__file__), "splits")
 # to convert our stereo predictions to real-world scale we multiply our depths by 5.4.
 STEREO_SCALE_FACTOR = 5.4
 
+baseline = 0.22
+focal = 2262
 
 def compute_errors(gt, pred):
     """Computation of error metrics between predicted and ground truth depths
@@ -39,10 +42,17 @@ def compute_errors(gt, pred):
     rmse_log = np.sqrt(rmse_log.mean())
 
     abs_rel = np.mean(np.abs(gt - pred) / gt)
+    abs_log = np.mean(np.abs((np.log(gt) - np.log(pred))))
 
     sq_rel = np.mean(((gt - pred) ** 2) / gt)
 
-    return abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3
+    log_diff = np.log(gt) - np.log(pred)
+    num_pixels = float(log_diff.size)
+    scale_inv = np.sqrt(np.sum(np.square(log_diff))/num_pixels - np.square(np.sum(log_diff))/np.square(num_pixels))
+
+    kl_div = scpystats.entropy(gt, pred)
+
+    return abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3, scale_inv, abs_log, kl_div
 
 
 def batch_post_process_disparity(l_disp, r_disp):
@@ -73,6 +83,11 @@ def evaluate(opt):
             "Cannot find a folder at {}".format(opt.load_weights_folder)
 
         print("-> Loading weights from {}".format(opt.load_weights_folder))
+        
+        print(splits_dir)
+        print(opt.eval_split)
+
+        print(os.path.join(splits_dir, opt.eval_split, "test_files.txt"))
 
         filenames = readlines(os.path.join(splits_dir, opt.eval_split, "test_files.txt"))
         encoder_path = os.path.join(opt.load_weights_folder, "encoder.pth")
@@ -80,9 +95,17 @@ def evaluate(opt):
 
         encoder_dict = torch.load(encoder_path, map_location=torch.device('cpu'))
 
-        dataset = datasets.KITTIRAWDataset(opt.data_path, filenames,
+        #print(filenames)
+
+        if opt.dataset == 'kitti':
+            dataset = datasets.KITTIRAWDataset(opt.data_path, filenames,
                                            encoder_dict['height'], encoder_dict['width'],
                                            [0], 4, is_train=False)
+        elif opt.dataset == 'cityscapes':
+            dataset = datasets.cityscapes_dataset(opt.data_path, filenames, 
+                                            encoder_dict['height'], encoder_dict['width'], 
+                                            [0], 4, is_train=False)
+
         dataloader = DataLoader(dataset, 16, shuffle=False, num_workers=opt.num_workers,
                                 pin_memory=True, drop_last=False)
 
@@ -99,12 +122,16 @@ def evaluate(opt):
         depth_decoder.eval()
 
         pred_disps = []
+        gt_depths = []
 
         print("-> Computing predictions with size {}x{}".format(
             encoder_dict['width'], encoder_dict['height']))
 
         with torch.no_grad():
             for data in dataloader:
+                #print(data)
+                #if opt.dataset == 'cityscapes':
+                #    gt_depths.append(data['depth_gt'].squeeze())
                 input_color = data[("color", 0, 0)]#.cuda()
 
                 if opt.post_process:
@@ -123,6 +150,8 @@ def evaluate(opt):
                 pred_disps.append(pred_disp)
 
         pred_disps = np.concatenate(pred_disps)
+        #if opt.dataset == 'cityscapes':
+        #    gt_depths = np.concatenate(gt_depths)
 
     else:
         # Load predictions from file
@@ -162,6 +191,7 @@ def evaluate(opt):
         print("-> No ground truth is available for the KITTI benchmark, so not evaluating. Done.")
         quit()
 
+    #if opt.dataset == 'kitti':
     gt_path = os.path.join(splits_dir, opt.eval_split, "gt_depths.npz")
     gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1')["data"]
 
